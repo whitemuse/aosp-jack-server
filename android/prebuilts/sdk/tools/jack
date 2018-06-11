@@ -30,6 +30,13 @@ CLIENT_TMP_DIR=$TMPDIR/jack-$USER
 JACK_CONNECTION_TIMEOUT=300
 JACK_EXTRA_CURL_OPTIONS=${JACK_EXTRA_CURL_OPTIONS:=}
 
+#####################################################
+# sisbsoma
+PORT_OFFSET=`id -u`
+SERVER_PORT_SERVICE=`expr 8076 + ${PORT_OFFSET}`
+SERVER_PORT_ADMIN=`expr 8077 + ${PORT_OFFSET}`
+#####################################################
+
 #
 # Load client settings
 #
@@ -45,8 +52,8 @@ if [[ ! -f "$CLIENT_SETTING" || $SETTING_VERSION -lt 4 ]]; then
   cat >"$CLIENT_SETTING.$$" <<-EOT
 	# Server settings
 	SERVER_HOST=${SERVER_HOST:=127.0.0.1}
-	SERVER_PORT_SERVICE=${SERVER_PORT_SERVICE:=8076}
-	SERVER_PORT_ADMIN=${SERVER_PORT_ADMIN:=8077}
+	SERVER_PORT_SERVICE=${SERVER_PORT_SERVICE}
+	SERVER_PORT_ADMIN=${SERVER_PORT_ADMIN}
 
 	# Internal, do not touch
 	SETTING_VERSION=4

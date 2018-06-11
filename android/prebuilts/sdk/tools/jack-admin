@@ -42,10 +42,39 @@ JACK_LOGS_DIR="$JACK_HOME"/logs
 JACK_OUT_ERR="$JACK_LOGS_DIR"/outputs.txt
 JACK_CONNECTION_TIMEOUT=300
 
+#####################################################
+# sisbsoma
+PORT_OFFSET=`id -u`
+SERVER_PORT_SERVICE_DEFAULT=8076
+SERVER_PORT_ADMIN_DEFAULT=8077
+
+SERVER_PORT_SERVICE=`expr 8076 + ${PORT_OFFSET}`
+SERVER_PORT_ADMIN=`expr 8077 + ${PORT_OFFSET}`
+######################################################
+
+#####################################################
+# sisbsoma
+updatePortNum() {
+  echo "Update Port Number - Jack Sever"
+  T_P=`grep SERVER_PORT_SERVICE ~/.jack-settings | cut -d'=' -f2`
+  if [ "$T_P" -ne "$SERVER_PORT_SERVICE" ]; then
+    if [ -f "$CLIENT_SETTING" ]; then
+      sed -i 's/SERVER_PORT_SERVICE.*/SERVER_PORT_SERVICE='$SERVER_PORT_SERVICE'/g' $CLIENT_SETTING
+      sed -i 's/SERVER_PORT_ADMIN.*/SERVER_PORT_ADMIN='$SERVER_PORT_ADMIN'/g' $CLIENT_SETTING
+    fi
+  fi
+  if [ -d "$JACK_HOME" ]; then
+    sed -i 's/jack.server.service.port.*/jack.server.service.port='$SERVER_PORT_SERVICE'/g' "$JACK_HOME/config.properties"
+    sed -i 's/jack.server.admin.port.*/jack.server.admin.port='$SERVER_PORT_ADMIN'/g' "$JACK_HOME/config.properties"
+  fi
+}
+#####################################################
+
 #
 # Load client settings
 #
 if [ -f "$CLIENT_SETTING" ]; then
+  updatePortNum
   source "$CLIENT_SETTING"
 fi
 
@@ -57,8 +86,8 @@ if [[ ! -f "$CLIENT_SETTING" || $SETTING_VERSION -lt 4 ]]; then
   cat >"$CLIENT_SETTING.$$" <<-EOT
 	# Server settings
 	SERVER_HOST=${SERVER_HOST:=127.0.0.1}
-	SERVER_PORT_SERVICE=${SERVER_PORT_SERVICE:=8076}
-	SERVER_PORT_ADMIN=${SERVER_PORT_ADMIN:=8077}
+	SERVER_PORT_SERVICE=${SERVER_PORT_SERVICE}
+	SERVER_PORT_ADMIN=${SERVER_PORT_ADMIN}
 
 	# Internal, do not touch
 	SETTING_VERSION=4
@@ -204,6 +233,20 @@ waitServerStarted () {
         echo "Jack server failed to (re)start, try 'jack-diagnose' or see Jack server log" >&2
         abort
       else
+        #####################################################
+        # sisbsoma
+        if [ "$CURL_CODE" -eq 7 ]; then
+          if [ -f "$JACK_HOME/config.properties" ]; then
+            JSSP=`grep "jack.server.service.port" "$JACK_HOME/config.properties" | cut -d'=' -f2`
+            if [ "$JSSP" -ne "$SERVER_PORT_SERVICE" ]; then
+              echo "@@ (New) Jack Server start~!!"
+              updatePortNum
+              funcStartServer
+              funcStopServer $JSSP
+            fi
+          fi
+        fi
+        #####################################################
         sleep 1
       fi
     else
@@ -230,6 +273,36 @@ listProgramVersion () {
        )
   handleHttpErrors $? $HTTP_CODE
   exec 3>&-
+}
+
+funcStopServer() {
+    echo "Stopping background server : $1"
+    HTTP_CODE=$(curl -f $JACK_EXTRA_CURL_OPTIONS \
+         --cert "${JACK_HOME}/client.pem" \
+         --cacert "${JACK_HOME}/server.pem" \
+         --output /dev/null \
+         --no-buffer --write-out '%{http_code}' --silent --connect-timeout $JACK_CONNECTION_TIMEOUT \
+         -X POST \
+         --noproxy ${SERVER_HOST} \
+         https://${SERVER_HOST}:$1/server/stop \
+         )
+
+    handleHttpErrors $? $HTTP_CODE
+}
+
+funcStartServer() {
+   JACK_SERVER_COMMAND="java -XX:MaxJavaStackTraceDepth=-1 -Djava.io.tmpdir=$TMPDIR $JACK_SERVER_VM_ARGUMENTS -cp $LAUNCHER_JAR $LAUNCHER_NAME"
+   echo "Launching Jack server" $JACK_SERVER_COMMAND
+   (
+     trap "" SIGHUP
+     for i in $(seq 3 255); do
+       eval exec "$i"'>&-'
+     done
+     cd "$JACK_HOME"
+     umask $BASE_UMASK
+     exec $JACK_SERVER_COMMAND
+     abort
+   ) >"$JACK_OUT_ERR" 2>&1 &
 }
 
 #
@@ -356,18 +429,19 @@ case $COMMAND in
 
 
   stop-server)
-    echo "Stopping background server"
-
-    HTTP_CODE=$(curl -f $JACK_EXTRA_CURL_OPTIONS \
-         --cert "${JACK_HOME}/client.pem" \
-         --cacert "${JACK_HOME}/server.pem" \
-         --output /dev/null \
-         --no-buffer --write-out '%{http_code}' --silent --connect-timeout $JACK_CONNECTION_TIMEOUT \
-         -X POST \
-         --noproxy ${SERVER_HOST} \
-         https://${SERVER_HOST}:$SERVER_PORT_ADMIN/server/stop \
-         )
-    handleHttpErrors $? $HTTP_CODE ;;
+    funcStopServer $SERVER_PORT_ADMIN;;
+#    echo "Stopping background server"
+#
+#    HTTP_CODE=$(curl -f $JACK_EXTRA_CURL_OPTIONS \
+#         --cert "${JACK_HOME}/client.pem" \
+#         --cacert "${JACK_HOME}/server.pem" \
+#         --output /dev/null \
+#         --no-buffer --write-out '%{http_code}' --silent --connect-timeout $JACK_CONNECTION_TIMEOUT \
+#         -X POST \
+#         --noproxy ${SERVER_HOST} \
+#         https://${SERVER_HOST}:$SERVER_PORT_ADMIN/server/stop \
+#         )
+#    handleHttpErrors $? $HTTP_CODE ;;
 
 
   server-stat)
@@ -451,18 +525,19 @@ case $COMMAND in
     if [ "$RUNNING" = 0 ]; then
       echo "Server is already running"
     else
-      JACK_SERVER_COMMAND="java -XX:MaxJavaStackTraceDepth=-1 -Djava.io.tmpdir=$TMPDIR $JACK_SERVER_VM_ARGUMENTS -cp $LAUNCHER_JAR $LAUNCHER_NAME"
-      echo "Launching Jack server" $JACK_SERVER_COMMAND
-      (
-        trap "" SIGHUP
-        for i in $(seq 3 255); do
-          eval exec "$i"'>&-'
-        done
-        cd "$JACK_HOME"
-        umask $BASE_UMASK
-        exec $JACK_SERVER_COMMAND
-        abort
-      ) >"$JACK_OUT_ERR" 2>&1 &
+      funcStartServer
+#      JACK_SERVER_COMMAND="java -XX:MaxJavaStackTraceDepth=-1 -Djava.io.tmpdir=$TMPDIR $JACK_SERVER_VM_ARGUMENTS -cp $LAUNCHER_JAR $LAUNCHER_NAME"
+#      echo "Launching Jack server" $JACK_SERVER_COMMAND
+#      (
+#        trap "" SIGHUP
+#        for i in $(seq 3 255); do
+#          eval exec "$i"'>&-'
+#        done
+#        cd "$JACK_HOME"
+#        umask $BASE_UMASK
+#        exec $JACK_SERVER_COMMAND
+#        abort
+#      ) >"$JACK_OUT_ERR" 2>&1 &
     fi
 
     waitServerStarted
